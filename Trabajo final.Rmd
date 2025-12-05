@@ -1,0 +1,983 @@
+---
+title: "Limpiar data"
+author: "Ximena Ynga"
+date: "2025-10-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(janitor)
+library(rio)
+library(plotly)
+library(countrycode)
+library(kableExtra)
+library(modelsummary)
+library(broom)
+library(ggplot2)
+library(ggcorrplot)
+library(cowplot)
+library(lmtest)
+library(car)
+library(DescTools)
+library(performance)
+library(psych)
+library(GPArotation)
+library(polycor)
+library(BBmisc)
+library(cluster)
+library(factoextra)
+library(gt)
+library(viridis)
+library(scales)
+library(matrixcalc)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wgi = import("wgidataset.xlsx")
+
+names(wgi)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+
+wgi <- wgi %>%
+  filter(year == 2022, indicator %in% c("cc", "ge")) %>%
+  dplyr::select(countryname, code, year, indicator, estimate)
+
+wgi <- wgi %>%
+  pivot_wider(
+    names_from  = indicator,
+    values_from = estimate,
+    names_prefix = "wgi_"
+  )
+
+head(wgi)
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wgi <- wgi %>%
+  mutate(
+    wgi_cc = as.numeric(wgi_cc),
+    wgi_ge = as.numeric(wgi_ge)
+  )
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wdi <- import("P_Data_Extract_From_World_Development_Indicators.xlsx")
+
+names(wdi)
+head(wdi)
+str(wdi)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wdi <- wdi %>%
+  dplyr::filter(`Series Name` %in% c(
+    "Carbon dioxide (CO2) emissions excluding LULUCF per capita (t CO2e/capita)",
+    "GDP per capita (constant 2015 US$)",
+    "Energy use (kg of oil equivalent per capita)",
+    "Urban population (% of total population)"
+  )) %>%
+  dplyr::select(
+    `Country Name`,
+    `Country Code`,
+    `Series Name`,
+    `2022 [YR2022]`
+  )
+
+wdi <- wdi %>%
+  pivot_wider(
+    names_from  = `Series Name`,
+    values_from = `2022 [YR2022]`
+  ) %>%
+  clean_names()
+
+head(wdi)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wdi <- wdi %>%
+  rename(
+    country = country_name,
+    code = country_code,
+    co2_pc = carbon_dioxide_co2_emissions_excluding_lulucf_per_capita_t_co2e_capita,
+    PBI_pc = gdp_per_capita_constant_2015_us,
+    energy_pc = energy_use_kg_of_oil_equivalent_per_capita,
+    urban_pop = urban_population_percent_of_total_population
+  )
+
+head(wdi)
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+str(wdi)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wdi <- wdi %>%
+  mutate(across(
+    c(co2_pc, PBI_pc, energy_pc, urban_pop),
+    ~ na_if(., "..")
+  )) %>%
+  mutate(across(
+    c(co2_pc, PBI_pc, energy_pc, urban_pop),
+    ~ as.numeric(.)
+  ))
+str(wdi)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+colSums(is.na(wdi))
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wdi <- wdi %>%
+  drop_na(co2_pc, PBI_pc, energy_pc, urban_pop)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wgi <- wgi %>%
+  drop_na(wgi_cc, wgi_ge)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+world <- wdi %>%
+  inner_join(wgi, by = "code")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+glimpse(world)
+nrow(world)
+```
+Mapa 
+
+```{r}
+world <- world %>%
+  dplyr::mutate(
+    iso3 = countrycode::countrycode(country,
+                                    origin = "country.name",
+                                    destination = "iso3c")
+  )
+```
+
+```{r}
+world_map <- rnaturalearth::ne_countries(
+  scale = "medium",
+  returnclass = "sf"
+)
+```
+
+```{r}
+map_data <- dplyr::left_join(
+  world_map,
+  world,
+  by = c("iso_a3" = "iso3")
+)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+world_plot <- world %>%
+  dplyr::mutate(
+    co2_log = log10(co2_pc),
+    co2_log = dplyr::if_else(is.infinite(co2_log) | is.na(co2_log),
+                             NA_real_, co2_log)
+  )
+```
+
+
+```{r}
+fig <- plotly::plot_ly(
+  data = world_plot,
+  type = "choropleth",
+  locations = ~code,
+  locationmode = "ISO-3",
+  z = ~co2_log,
+  text = ~paste(
+    "<b>País:</b>", country,
+    "<br><b>CO₂ per cápita:</b>", round(co2_pc, 2), "t"
+  ),
+  hoverinfo = "text",
+  colorscale = "Blues",
+  reversescale = TRUE,
+  marker = list(
+    line = list(color = "gray20", width = 0.3)
+  ),
+  colorbar = list(
+    title = "CO₂ per cápita (t)",
+    tickvals = log10(c(0.1, 1, 5, 10, 20)),
+    ticktext = c("0.1", "1", "5", "10", "20"),
+    x = 1.03,   
+    y = 0.75      
+  )
+) %>%
+  plotly::layout(
+    title = list(
+      text = "<b>Mapa mundial de calor de emisiones CO₂ per cápita del año 2022</b>",
+      x = 0.5, y = 0.97,
+      font = list(size = 22)
+    ),
+
+    annotations = list(
+
+ 
+      list(
+        text = "Valores representados en escala logarítmica para facilitar comparación global",
+        x = 0.5, y = 0.91,
+        xref = "paper", yref = "paper",
+        showarrow = FALSE,
+        font = list(size = 16, color = "gray30")
+      ),
+
+      list(
+        text = "Fuente: World Development Indicators (2023) | CO₂ per cápita (t CO₂e/persona)",
+        x = 0.5, y = -0.1,
+        xref = "paper", yref = "paper",
+        showarrow = FALSE,
+        font = list(size = 11, color = "gray40")
+      )
+    ),
+
+    geo = list(
+      showframe = FALSE,
+      projection = list(type = "robinson"),
+      showcoastlines = TRUE,
+      coastlinecolor = "gray40",
+      showcountries = TRUE,
+      countrycolor = "gray50"
+    )
+  )
+
+fig
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+write_csv(world, "world.csv")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(rio)
+world=import("World.csv")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+names(world)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+world <- world %>%
+  dplyr::select(-code, -countryname)
+```
+
+
+```{r}
+descriptivos <- world %>%
+  summarise(
+    media_ge = mean(wgi_ge),
+    sd_ge = sd(wgi_ge),
+    media_co2 = mean(co2_pc),
+    sd_co2 = sd(co2_pc),
+    media_pbi = mean(PBI_pc),
+    sd_pbi = sd(PBI_pc),
+    media_energy = mean(energy_pc),
+    sd_energy = sd(energy_pc),
+    media_urban = mean(urban_pop),
+    sd_urban = sd(urban_pop)
+  ) %>%
+  pivot_longer(everything(),
+               names_to = "Medida",
+               values_to = "Valor")
+
+descriptivos %>%
+  gt() %>%
+  tab_header(
+    title = "Estadísticos Descriptivos de las Variables del Estudio"
+  ) %>%
+  fmt_number(columns = Valor, decimals = 3)
+
+```
+Graficos
+
+```{r}
+ggplot(world, aes(x = wgi_ge)) +
+  geom_histogram(bins = 30, aes(fill = ..count..), color = "white") +
+  scale_fill_viridis(option = "E") +
+  labs(
+    title = "Distribución del Indicador de Efectividad del Gobierno (WGI)",
+    x = "WGI - Efectividad del Gobierno",
+    y = "Frecuencia"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+
+
+```
+
+
+```{r}
+ggplot(world, aes(x = co2_pc)) +
+  geom_histogram(binwidth = 0.2, fill = "#27AE60", color = "white") +
+  scale_x_log10(
+    labels = label_comma(),
+    breaks = c(0.1, 0.5, 1, 2, 5, 10, 20)
+  ) +
+  labs(
+    title = "Distribución de las Emisiones de CO2 per cápita (escala logarítmica)",
+    x = "CO₂ per cápita (toneladas, escala log)",
+    y = "Frecuencia (número de países)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold")
+  )
+
+```
+
+
+```{r}
+ggplot(world, aes(x = PBI_pc)) +
+  geom_histogram(bins = 30, aes(fill = ..count..), color = "white") +
+  scale_fill_viridis(option = "C", direction = -1) +
+  scale_x_log10(labels = comma_format()) +
+  labs(
+    title = "Distribución del PBI per cápita (escala logarítmica)",
+    x = "PBI per cápita (US$ constantes 2015, escala log)",
+    y = "Frecuencia",
+    fill = "Frecuencia"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+ggplot(world, aes(x = energy_pc)) +
+  geom_histogram(bins = 30, aes(fill = ..count..), color = "white") +
+  scale_fill_viridis(option = "D", direction = 1) +
+  scale_x_log10(labels = comma_format()) +
+  labs(
+    title = "Distribución del Uso de Energía per cápita (escala logarítmica)",
+    x = "Energía (kg de petróleo equivalente per cápita, escala log)",
+    y = "Frecuencia",
+    fill = "Frecuencia"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+ggplot(world, aes(x = urban_pop)) +
+  geom_histogram(bins = 30, aes(fill = ..count..), color = "white") +
+  scale_fill_viridis(option = "B") +
+  labs(
+    title = "Distribución del Porcentaje de Población Urbana",
+    x = "% población urbana",
+    y = "Frecuencia"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+
+```
+
+```{r}
+ggplot(world, aes(x = wgi_cc)) +
+  geom_histogram(bins = 30, aes(fill = ..count..), color = "white") +
+  scale_fill_viridis(option = "A") +
+  labs(
+    title = "Distribución del Indicador de Control de Corrupción (WGI)",
+    x = "WGI - Control de Corrupción",
+    y = "Frecuencia"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+
+```
+
+Analisis Bivariado
+
+En base a lo anteriormente visto se usarán las variables pertinentes como variables logaritmicas
+
+```{r}
+world <- world %>% 
+  filter(co2_pc > 0,
+         PBI_pc > 0,
+         energy_pc > 0) %>% 
+  mutate(
+    co2_pc   = log(co2_pc),
+    PBI_pc   = log(PBI_pc),
+    energy_pc = log(energy_pc)
+  )
+```
+
+
+Co2 vs PBI_pc
+
+```{r}
+cor_PBI <- stats::cor(world$co2_pc, world$PBI_pc)
+cor_PBI
+
+tabla_cor_PBI <- dplyr::tibble(
+  variable_dependiente   = "co2_pc",
+  variable_independiente = "PBI_pc",
+  correlacion_pearson    = cor_PBI
+)
+```
+
+```{r}
+
+cor_PBI <- stats::cor(world$co2_pc, world$PBI_pc)
+
+tabla_co2_pbi <- dplyr::tibble(
+  variable_dependiente   = "CO2 per cápita",
+  variable_independiente = "PBI per cápita",
+  correlacion_pearson    = cor_PBI
+)
+
+gt::gt(tabla_co2_pbi) %>%
+  gt::fmt_number(columns = correlacion_pearson, decimals = 3) %>%
+  gt::tab_header(title = "Correlación: CO₂ vs PBI per cápita")
+
+```
+
+gráfico 1.2
+```{r}
+
+g_PBI <- ggplot2::ggplot(world, ggplot2::aes(x = PBI_pc, y = co2_pc)) +
+  ggplot2::geom_point(alpha = 0.7, color = viridis::viridis(1, option = "D")) +
+  ggplot2::geom_smooth(method = "lm", se = TRUE, color = "black") +
+  ggplot2::scale_x_continuous(labels = scales::label_comma()) +
+  ggplot2::scale_y_continuous(labels = scales::label_comma()) +
+  ggplot2::labs(
+    title = "CO₂ per cápita vs PBI per cápita",
+    x = "PBI per cápita (US$ constantes 2015)",
+    y = "CO₂ per cápita (t CO₂e/cápita)"
+  ) +
+  ggplot2::theme_minimal(base_size = 14)
+
+g_PBI
+
+```
+ 2. CO2 vs energy_pc 
+
+
+```{r}
+cor_energy <- cor(world$co2_pc, world$energy_pc)
+cor_energy
+```
+
+
+```{r}
+tabla_cor_energy <- tibble::tibble(
+  variable_dependiente   = "co2_pc",
+  variable_independiente = "energy_pc",
+  correlacion_pearson    = cor_energy
+)
+
+tabla_cor_energy %>%
+  gt::gt() %>%
+  gt::fmt_number(columns = correlacion_pearson, decimals = 3) %>%
+  gt::tab_header(
+    title = "Correlación entre CO₂ per cápita y uso de energía per cápita"
+  )
+```
+
+
+```{r}
+g_energy <- ggplot2::ggplot(world, ggplot2::aes(x = energy_pc, y = co2_pc)) +
+  ggplot2::geom_point(alpha = 0.7, color = viridis::viridis(1, option = "E")) +
+  ggplot2::geom_smooth(method = "lm", se = TRUE, color = "black") +
+  ggplot2::scale_x_continuous(labels = scales::label_comma()) +
+  ggplot2::scale_y_continuous(labels = scales::label_comma()) +
+  ggplot2::labs(
+    title = "CO₂ per cápita vs Uso de energía per cápita",
+    x = "Uso de energía per cápita (kg de equivalente de petróleo)",
+    y = "CO₂ per cápita (t CO₂e/cápita)"
+  ) +
+  ggplot2::theme_minimal(base_size = 14)
+
+g_energy
+
+```
+
+
+3. CO2 vs urban_pop
+
+```{r}
+cor_urban <- stats::cor(world$co2_pc, world$urban_pop)
+cor_urban
+```
+
+
+```{r}
+tabla_cor_urban <- dplyr::tibble(
+  variable_dependiente   = "co2_pc",
+  variable_independiente = "urban_pop",
+  correlacion_pearson    = cor_urban
+)
+
+gt::gt(tabla_cor_urban) %>%
+  gt::fmt_number(columns = correlacion_pearson, decimals = 3) %>%
+  gt::tab_header(
+    title = "Correlación entre CO₂ per cápita y Población urbana"
+  )
+```
+
+
+```{r}
+g_urban <- ggplot2::ggplot(world, ggplot2::aes(x = urban_pop, y = co2_pc)) +
+  ggplot2::geom_point(alpha = 0.7, color = viridis::viridis(1, option = "C")) +
+  ggplot2::geom_smooth(method = "lm", se = TRUE, color = "black") +
+  ggplot2::scale_x_continuous(labels = scales::label_comma()) +
+  ggplot2::scale_y_continuous(labels = scales::label_comma()) +
+  ggplot2::labs(
+    title = "CO₂ per cápita vs Población urbana",
+    x = "Población urbana (% del total)",
+    y = "CO₂ per cápita (t CO₂e/cápita)"
+  ) +
+  ggplot2::theme_minimal(base_size = 14)
+
+g_urban
+
+```
+
+4. CO2 vs Corrupción
+
+```{r}
+cor_wgi_cc <- stats::cor(world$co2_pc, world$wgi_cc)
+cor_wgi_cc
+```
+
+
+```{r}
+tabla_cor_wgi_cc <- dplyr::tibble(
+  variable_dependiente   = "co2_pc",
+  variable_independiente = "wgi_cc",
+  correlacion_pearson    = cor_wgi_cc
+)
+
+gt::gt(tabla_cor_wgi_cc) %>%
+  gt::fmt_number(columns = correlacion_pearson, decimals = 3) %>%
+  gt::tab_header(
+    title = "Correlación entre CO₂ per cápita y Control de la Corrupción"
+  )
+```
+
+
+```{r}
+g_wgi_cc <- ggplot2::ggplot(world, ggplot2::aes(x = wgi_cc, y = co2_pc)) +
+  ggplot2::geom_point(alpha = 0.7, color = viridis::viridis(1, option = "F")) +
+  ggplot2::geom_smooth(method = "lm", se = TRUE, color = "black") +
+  ggplot2::scale_x_continuous(labels = scales::label_comma()) +
+  ggplot2::scale_y_continuous(labels = scales::label_comma()) +
+  ggplot2::labs(
+    title = "CO₂ per cápita vs Control de la Corrupción",
+    x = "Control de la Corrupción (WGI_CC)",
+    y = "CO₂ per cápita (t CO₂e/cápita)"
+  ) +
+  ggplot2::theme_minimal(base_size = 14)
+
+g_wgi_cc
+
+```
+
+5. CO2 vs Efectividad de gobierno
+
+```{r}
+cor_wgi_ge <- stats::cor(world$co2_pc, world$wgi_ge)
+cor_wgi_ge
+```
+
+
+```{r}
+tabla_cor_wgi_ge <- dplyr::tibble(
+  variable_dependiente   = "co2_pc",
+  variable_independiente = "wgi_ge",
+  correlacion_pearson    = cor_wgi_ge
+)
+
+gt::gt(tabla_cor_wgi_ge) %>%
+  gt::fmt_number(columns = correlacion_pearson, decimals = 3) %>%
+  gt::tab_header(
+    title = "Correlación entre CO₂ per cápita y Gobierno Efectivo"
+  )
+```
+
+
+```{r}
+g_wgi_ge <- ggplot2::ggplot(world, ggplot2::aes(x = wgi_ge, y = co2_pc)) +
+  ggplot2::geom_point(alpha = 0.7, color = viridis::viridis(1, option = "A")) +
+  ggplot2::geom_smooth(method = "lm", se = TRUE, color = "black") +
+  ggplot2::scale_x_continuous(labels = scales::label_comma()) +
+  ggplot2::scale_y_continuous(labels = scales::label_comma()) +
+  ggplot2::labs(
+    title = "CO₂ per cápita vs Gobierno Efectivo",
+    x = "Gobierno Efectivo (WGI_GE)",
+    y = "CO₂ per cápita (t CO₂e/cápita)"
+  ) +
+  ggplot2::theme_minimal(base_size = 14)
+
+g_wgi_ge
+
+```
+Regresión Gauss
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+modelo_1 <- stats::lm(
+  formula = co2_pc ~ wgi_cc + wgi_ge,
+  data    = world
+)
+summary(modelo_1)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+modelo_2 <- stats::lm(
+  formula = co2_pc ~ wgi_cc + wgi_ge + PBI_pc,
+  data    = world
+)
+summary(modelo_2)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+modelo_3 <- stats::lm(
+  formula = co2_pc ~ wgi_cc + wgi_ge + PBI_pc + urban_pop,
+  data    = world
+)
+summary(modelo_3)
+```
+
+
+```{r}
+modelo_4 <- stats::lm(
+  formula = co2_pc ~ wgi_cc + wgi_ge + PBI_pc + urban_pop + energy_pc,
+  data    = world
+)
+summary(modelo_4)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+modelo_5 <- stats::lm(
+  formula = co2_pc ~ wgi_cc + PBI_pc + energy_pc,
+  data    = world
+)
+summary(modelo_5)
+```
+
+Elección de regresión
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+stats::anova(modelo_1, modelo_2, modelo_3, modelo_4, modelo_5)
+
+```
+
+Diagnostico del modelo 4
+
+```{r}
+mod_final <- lm(co2_pc ~ wgi_cc + wgi_ge + PBI_pc + urban_pop + energy_pc, data = world)
+```
+
+
+Linealidad 
+
+
+```{r}
+plot(mod_final, 1,
+     col = "#4B4B4B",
+     pch = 19,
+     cex = 0.8,
+     main = "Evaluando Linealidad - Modelo 4")
+
+```
+
+Homocedasticidad 
+
+```{r}
+bp_mod4 <- bptest(mod_final)
+
+data.frame(
+  BP = bp_mod4$statistic,
+  df = bp_mod4$parameter,
+  p_value = bp_mod4$p.value
+) %>%
+  kable(caption = bp_mod4$method) %>%
+  kable_styling(full_width = FALSE)
+```
+
+
+```{r}
+plot(mod_final, 3,
+     col = "blue",
+     pch = 19,
+     cex = 0.8,
+     main = "Evaluando Homocedasticidad - Modelo 4")
+```
+
+Normalidad de residuos 
+
+```{r}
+sw_mod4 <- shapiro.test(mod_final$residuals)
+
+data.frame(
+  W = sw_mod4$statistic,
+  p_value = sw_mod4$p.value
+) %>%
+  kable(caption = sw_mod4$method) %>%
+  kable_styling(full_width = FALSE)
+```
+
+
+```{r}
+
+plot(mod_final, 2,
+     col = "#4B4B4B",
+     pch = 19,
+     cex = 0.8,
+     main = "Evaluando Normalidad de Residuos - Modelo 4")
+
+sw_mod4 <- shapiro.test(mod_final$residuals)
+
+data.frame(
+  W = sw_mod4$statistic,
+  p_value = sw_mod4$p.value
+) %>%
+  kable(caption = sw_mod4$method) %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+Multicolinealidad
+
+```{r}
+vif_mod4 <- VIF(mod_final)
+
+data.frame(VIF = vif_mod4) %>%
+  kable(caption = "Evaluación de Multicolinealidad (VIF) - Modelo 4") %>%
+  kable_styling(full_width = FALSE)
+```
+
+Valores Influyentes
+
+```{r}
+infl_mod4 <- as.data.frame(influence.measures(mod_final)$is.inf)
+
+infl_mod4[infl_mod4$cook.d | infl_mod4$hat, c("cook.d","hat")] %>%
+  kable(caption = "Valores Influyentes Críticos - Modelo 4") %>%
+  kable_styling(full_width = FALSE)
+```
+
+Analisis factorial 
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+id_vars <- c("country", "year")
+
+efa_vars <- c("co2_pc", "PBI_pc", "energy_pc",
+              "urban_pop", "wgi_cc", "wgi_ge")
+
+theData <- world[, efa_vars]
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+world$idx_row <- 1:nrow(world)
+theData$idx_row <- world$idx_row[complete.cases(world[, efa_vars])]
+```
+
+
+```{r}
+corMatrix <- cor(theData[, efa_vars], use = "pairwise.complete.obs")
+
+round(corMatrix, 2)
+```
+
+```{r}
+fa.parallel(theData, fa = 'fa',correct = T,plot = F)
+```
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggcorrplot(corMatrix,
+           lab = TRUE,
+           outline.color = "white") +
+  ggtitle("Matriz de Correlaciones - Variables institucionales, económicas y energéticas") +
+  theme_minimal()
+```
+
+
+```{r}
+psych::KMO(corMatrix)
+```
+
+```{r}
+cortest.bartlett(corMatrix, n = nrow(theData))
+
+is.singular.matrix(corMatrix)
+
+```
+
+```{r}
+fa.parallel(theData[, efa_vars],
+            fa      = "fa",
+            correct = TRUE,
+            plot    = TRUE)
+```
+
+```{r}
+resfa <- fa(theData[, efa_vars],
+            nfactors = 2,
+            cor      = "mixed",
+            rotate   = "varimax",
+            fm       = "minres")
+
+print(resfa$loadings)
+
+print(resfa$loadings, cutoff = 0.5)
+```
+
+```{r}
+fa.diagram(resfa,
+           main = "Resultados del EFA - Factores institucionales y energéticos")
+
+```
+
+```{r}
+sort(resfa$communality)
+
+sort(resfa$complexity)
+
+resfa$TLI   
+resfa$rms      
+resfa$RMSEA   
+resfa$BIC
+
+```
+
+```{r}
+head(resfa$scores)
+
+theData$Factor_1 <- resfa$scores[, 1]
+theData$Factor_2 <- resfa$scores[, 2]
+
+world <- world %>%
+  left_join(
+    theData[, c("idx_row", "Factor_1", "Factor_2")],
+    by = "idx_row"
+  )
+
+```
+
+```{r}
+world <- world %>%
+  rename(
+    F_institucional = Factor_1,
+    F_energia_desarrollo = Factor_2
+  )
+```
+
+Cluster
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+
+cluster_data <- world %>%
+  filter(!is.na(F_institucional),
+         !is.na(F_energia_desarrollo)) %>%
+  select(country, year, F_institucional, F_energia_desarrollo)
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+X_cluster <- cluster_data %>%
+  select(F_institucional, F_energia_desarrollo) %>%
+  scale()
+
+set.seed(123)  
+k3 <- kmeans(X_cluster, centers = 3, nstart = 30)
+
+cluster_data$cluster_k3 <- factor(k3$cluster)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+world <- world %>%
+  left_join(
+    cluster_data %>% select(country, year, cluster_k3),
+    by = c("country", "year")
+  )
+```
+
+
+```{r}
+library(ggplot2)
+
+ggplot(cluster_data,
+       aes(x = F_institucional,
+           y = F_energia_desarrollo,
+           color = cluster_k3,
+           label = country)) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    x = "Factor institucional",
+    y = "Factor energía y desarrollo",
+    color = "Clúster k-means",
+    title = "Agrupación de países según factores institucionales y de energía/desarrollo"
+  )
+
+```
+
+```{r}
+cluster_resumen <- cluster_data %>%
+  group_by(cluster_k3) %>%
+  summarise(
+    n_paises = n(),
+    prom_F_institucional = mean(F_institucional),
+    prom_F_energia_desarrollo = mean(F_energia_desarrollo),
+    .groups = "drop"
+)
+
+cluster_resumen
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
